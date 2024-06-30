@@ -20,6 +20,8 @@ func TestNewFlacEncoder(t *testing.T) {
 		t.Fatalf("NewFlacEncoder failed: %v", err)
 	}
 
+	encoder.Encode()
+
 	// Check if the encoder was created with non-zero values
 	// Note: We can't predict exact values without knowing the content of sample.wav
 	if encoder.sampleRate != 44100 {

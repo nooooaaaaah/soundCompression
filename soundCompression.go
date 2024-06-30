@@ -1,6 +1,7 @@
 package main
 
 import (
+	"crypto/md5"
 	"encoding/binary"
 	"fmt"
 	"io"
@@ -17,6 +18,7 @@ type FlacEncoder struct {
 	totalSamples uint64
 	minBlockSize int
 	maxBlockSize int
+	md5sum       []byte
 }
 
 const WAVHeaderSize = 44
@@ -138,6 +140,30 @@ func (f *FlacEncoder) Encode() error {
 	if err != nil {
 		return fmt.Errorf("error seeking past WAV header: %w", err)
 	}
+	hasher := md5.New()
+	buffer := make([]byte, 4096)
+	for {
+		n, err := f.inputFile.Read(buffer)
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return fmt.Errorf("error reading audio data: %w", err)
+		}
+
+		hasher.Write(buffer[:n])
+
+		// TODO process and encode the audio data
+		// Reads audio data from the input file, processes it, and encodes it into FLAC format.
+	}
+	f.md5sum = hasher.Sum(nil)
+
+	// Write the FLAC stream header (including STREAMINFO)
+	err = f.writeFlacStreamHeader()
+	if err != nil {
+		return fmt.Errorf("error writing FLAC stream header: %w", err)
+	}
+
 	return nil
 }
 
@@ -159,7 +185,7 @@ func (f *FlacEncoder) writeFlacStreamHeader() error {
 
 	// TODO more metadata blocks
 
-	return err
+	return nil
 }
 
 // manditory metadata block
@@ -182,10 +208,10 @@ func (f *FlacEncoder) writeStreamInfo() error {
 
 	streamInfo[14] = byte(f.channels-1)<<4 | byte(f.bitDepth-1)
 
-	binary.BigEndian.PutUint32(streamInfo[18:22], uint32(f.totalSamples))
+	binary.BigEndian.PutUint32(streamInfo[18:23], uint32(f.totalSamples))
 
-	// Write MD5 signature of the unencoded audio data (all zeros for now)
-	// In a real implementation, you'd compute this as you encode
+	// Write MD5 signature of the unencoded audio Data (all zeros for now)
+	copy(streamInfo[18:], f.md5sum)
 
 	_, err = f.outputFile.Write(streamInfo)
 	return err
@@ -227,31 +253,4 @@ func countLines(filename string) (int, error) {
 	}
 
 	return count, nil
-}
-
-func main() {
-	inputPath := "sample.wav"
-	outputPath := "output.flac"
-	fmt.Println("Starting Byte Count: ", func() string {
-		count, err := countLines(inputPath)
-		if err != nil {
-			return fmt.Sprint(err)
-		}
-		return fmt.Sprint(count)
-	}())
-	encoder, err := NewFlacEncoder(inputPath, outputPath)
-	if err != nil {
-		fmt.Println("Error creating encoder:", err)
-		return
-	}
-	defer encoder.inputFile.Close()
-	defer encoder.outputFile.Close()
-
-	err = encoder.Encode()
-	if err != nil {
-		fmt.Println("Error encoding:", err)
-		return
-	}
-
-	fmt.Println("Encoding completed successfully")
 }
