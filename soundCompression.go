@@ -9,6 +9,8 @@ import (
 	"os/exec"
 )
 
+const WAVHeaderSize = 44
+
 type FlacEncoder struct {
 	inputFile    *os.File
 	outputFile   *os.File
@@ -20,8 +22,6 @@ type FlacEncoder struct {
 	maxBlockSize int
 	md5sum       []byte
 }
-
-const WAVHeaderSize = 44
 
 // Wav header should be 44 bytes in size
 // We retun the full header and the info
@@ -170,6 +170,7 @@ func (f *FlacEncoder) Encode() error {
 func (f *FlacEncoder) readSamples(buffer []int32) (int, error) {
 	return 0, nil
 }
+
 func (f *FlacEncoder) writeFlacStreamHeader() error {
 	// marker for flac metadata
 	_, err := f.outputFile.Write([]byte("fLaC"))
@@ -210,7 +211,7 @@ func (f *FlacEncoder) writeStreamInfo() error {
 
 	binary.BigEndian.PutUint32(streamInfo[18:23], uint32(f.totalSamples))
 
-	// Write MD5 signature of the unencoded audio Data (all zeros for now)
+	// Write MD5 signature of the unencoded audio Data
 	copy(streamInfo[18:], f.md5sum)
 
 	_, err = f.outputFile.Write(streamInfo)
