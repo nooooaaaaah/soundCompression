@@ -2,14 +2,14 @@
 
 ## TODO
 
-- [ ] Complete the STREAMINFO metadata block
+- [x] Complete the STREAMINFO metadata block
 
-- [ ] Update the writeStreamInfo method to include all required fields:
-  - [ ] Sample rate: Use binary.BigEndian.PutUint32() to write the 20-bit sample rate
-  - [ ] Channels: Write the number of channels minus 1 (3 bits)
-  - [ ] Bits per sample: Write the bits per sample minus 1 (5 bits)
-  - [ ] Total samples: Use binary.BigEndian.PutUint64() to write the 36-bit total samples count
-  - [ ] MD5 signature: Calculate and write the 16-byte MD5 sum of the unencoded audio data
+- [x] Update the writeStreamInfo method to include all required fields:
+  - [x] Sample rate: Use binary.BigEndian.PutUint32() to write the 20-bit sample rate
+  - [x] Channels: Write the number of channels minus 1 (3 bits)
+  - [x] Bits per sample: Write the bits per sample minus 1 (5 bits)
+  - [x] Total samples: Use binary.BigEndian.PutUint64() to write the 36-bit total samples count
+  - [x] MD5 signature: Calculate and write the 16-byte MD5 sum of the unencoded audio data
 
 - [ ] Implement the main Encode method
   - [ ] Read input audio data in chunks (use the block size as the chunk size)

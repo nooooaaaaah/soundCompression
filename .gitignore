@@ -1,2 +1,5 @@
 *.flac
 .DS_Store
+*.wav
+rfcflac14.txt
+notes.md
