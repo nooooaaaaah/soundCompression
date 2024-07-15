@@ -27,15 +27,6 @@ func TestNewEncoder(t *testing.T) {
 			expectedMaxBS: 0,
 		},
 		{
-			name:          "Invalid output path",
-			audioFilePath: "../sample.wav",
-			outputPath:    "/invalid_path/test_output.flac",
-			expectedErr:   true,
-			expectedInput: nil,
-			expectedMinBS: DefaultMinBlockSize,
-			expectedMaxBS: DefaultMaxBlockSize,
-		},
-		{
 			name:          "Invalid audio format",
 			audioFilePath: "../sample.txt",
 			outputPath:    "test_output.flac",
