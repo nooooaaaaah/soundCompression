@@ -36,6 +36,8 @@ func NewEncoder(input audio.Format, outputPath string, logging bool) (*Encoder, 
 		return nil, fmt.Errorf("error creating output file: %w", err)
 	}
 
+	// Enforce the requriemnts of a flac encoder
+
 	return &Encoder{
 		input:        input,
 		output:       outputFile,

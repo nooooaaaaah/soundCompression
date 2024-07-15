@@ -57,6 +57,7 @@ func TestNewEncoder(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			audioFormat, err := audio.NewWAVFormat(tt.audioFilePath)
+			t.Logf("format: %v, error %v", audioFormat, err)
 			if (err != nil) != tt.expectedErr {
 				t.Fatalf("expected error: %v, got: %v", tt.expectedErr, err)
 			}
