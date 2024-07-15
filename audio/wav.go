@@ -39,6 +39,10 @@ type WAVFormat struct {
 // NewWAVFormat opens a WAV file and reads its header.
 // file is left open
 func NewWAVFormat(path string) (*WAVFormat, error) {
+	if _, err := os.Stat(path); os.IsNotExist(err) {
+		return nil, fmt.Errorf("file does not exist: %w", err)
+	}
+
 	file, err := os.Open(path)
 	if err != nil {
 		return nil, fmt.Errorf("error opening file: %w", err)
