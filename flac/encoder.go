@@ -4,6 +4,7 @@ import (
 	"encoding/binary"
 	"fmt"
 	"io"
+	"math"
 	"os"
 
 	"log"
@@ -294,4 +295,22 @@ func (e *Encoder) Close() error {
 		outputErr = e.output.Close()
 	}
 	return outputErr
+}
+
+// Calculate the minimum block size. Minimum bit depth is within valid range (4-32 bits)
+// Ensure channels are in a valid range (1-8 channels). The minimum block size equates to 16 samples
+// This function is crucial for ensuring that the audio data is encoded correctly and efficiently.
+// By validating the bit depth and channel count, it helps prevent errors and ensures compatibility with the FLAC specification.
+// The block size also plays a role in the overall compression efficiency and latency of the encoded audio.
+func calcMinBlockSize(bitDepth, channels int) int {
+	const minSamples = 16
+	if bitDepth >= 4 && bitDepth <= 32 {
+		if channels >= 1 && channels <= 8 {
+			totalBits := minSamples * bitDepth * channels
+			return int(math.Ceil(float64(totalBits) / 8))
+		}
+	}
+	// If the bit depth or channels are out of the valid range, return 0 to indicate an error
+	// Returning 0 indicates that the provided bit depth or channel count is invalid.
+	return 0
 }
