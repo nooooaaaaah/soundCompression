@@ -261,17 +261,14 @@ func (e *Encoder) predictSamples(samples []int32) ([]int32, []int32) {
 }
 
 /*
-encodeResidual is intended to encode the residuals (differences between actual samples and predicted samples) into a compressed format suitable for FLAC.
+encodeResidual encodes the residuals (differences between actual samples and predicted samples) into a compressed format suitable for FLAC.
 
-Residual encoding is a critical step in the FLAC compression process, as it significantly reduces the amount of data that needs to be stored. The residuals are typically encoded using Rice coding, a form of entropy coding that is efficient for this type of data.
+Residual encoding significantly reduces the amount of data that needs to be stored. The residuals are typically encoded using Rice coding, a form of entropy coding efficient for this type of data.
 
-The function should perform the following steps:
-
- 1. Determine the optimal Rice parameter for the residuals. The Rice parameter is used to balance the trade-off between the size of the encoded data and the complexity of encoding.
- 2. Encode the residuals using the calculated Rice parameter. This involves splitting the residuals into groups and encoding each group with the Rice parameter.
- 3. Return the encoded residuals as a byte slice, which will be written to the FLAC stream.
-
-The function returns a byte slice containing the encoded residuals. This encoded data will be used in the FLAC stream to reconstruct the original audio samples during decoding.
+The function performs the following steps:
+ 1. Determines the optimal Rice parameter for the residuals, balancing the trade-off between the size of the encoded data and the complexity of encoding.
+ 2. Encodes the residuals using the calculated Rice parameter by splitting them into groups and encoding each group with the Rice parameter.
+ 3. Returns the encoded residuals as a byte slice, which will be written to the FLAC stream.
 
 Proper implementation of this function is crucial for achieving high compression ratios in the FLAC format.
 */
@@ -284,7 +281,7 @@ func (e *Encoder) encodeResidual(residual []int32) []byte {
 	return nil
 }
 
-// Close closes the output flac file
+// Close closes the output flac file, ensuring all data is properly written and resources are released.
 func (e *Encoder) Close() error {
 	if e.logging {
 		log.Println("Closing output file")
@@ -297,11 +294,16 @@ func (e *Encoder) Close() error {
 	return outputErr
 }
 
-// Calculate the minimum block size. Minimum bit depth is within valid range (4-32 bits)
-// Ensure channels are in a valid range (1-8 channels). The minimum block size equates to 16 samples
-// This function is crucial for ensuring that the audio data is encoded correctly and efficiently.
-// By validating the bit depth and channel count, it helps prevent errors and ensures compatibility with the FLAC specification.
-// The block size also plays a role in the overall compression efficiency and latency of the encoded audio.
+/*
+calcMinBlockSize calculates the minimum block size for FLAC encoding.
+
+The function ensures the bit depth is within the valid range (4-32 bits) and that the number of channels is valid (1-8 channels). It performs the following steps:
+ 1. Validates the bit depth and channel count.
+ 2. Calculates the total number of bits required for the minimum block size (16 samples).
+ 3. Returns the minimum block size in bytes.
+
+The minimum block size affects the overall compression efficiency and latency of the encoded audio. If the bit depth or channels are out of the valid range, the function returns 0 to indicate an error.
+*/
 func calcMinBlockSize(bitDepth, channels int) int {
 	const minSamples = 16
 	if bitDepth >= 4 && bitDepth <= 32 {
@@ -310,7 +312,6 @@ func calcMinBlockSize(bitDepth, channels int) int {
 			return int(math.Ceil(float64(totalBits) / 8))
 		}
 	}
-	// If the bit depth or channels are out of the valid range, return 0 to indicate an error
 	// Returning 0 indicates that the provided bit depth or channel count is invalid.
 	return 0
 }
