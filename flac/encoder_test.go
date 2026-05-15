@@ -147,3 +147,23 @@ func TestWriteStreamInfo(t *testing.T) {
 		})
 	}
 }
+
+func Test_crc16(t *testing.T) {
+	tests := []struct {
+		name string // description of this test case
+		// Named input parameters for target function.
+		data []byte
+		want uint16
+	}{
+		// TODO: Add test cases.
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := crc16(tt.data)
+			// TODO: update the condition below to compare got with tt.want.
+			if true {
+				t.Errorf("crc16() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}

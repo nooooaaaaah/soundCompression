@@ -1,8 +1,10 @@
 package flac
 
 import (
+	"crypto/md5"
 	"encoding/binary"
 	"fmt"
+	"hash"
 	"io"
 	"math"
 	"os"
@@ -24,6 +26,7 @@ type Encoder struct {
 	output       *os.File
 	minBlockSize int
 	maxBlockSize int
+	md5Hash      hash.Hash
 	md5sum       []byte
 	logging      bool
 }
@@ -44,6 +47,7 @@ func NewEncoder(input audio.Format, outputPath string, logging bool) (*Encoder, 
 		output:       outputFile,
 		minBlockSize: DefaultMinBlockSize,
 		maxBlockSize: DefaultMaxBlockSize,
+		md5Hash:      md5.New(),
 		logging:      logging,
 	}, nil
 }
@@ -82,6 +86,7 @@ func (e *Encoder) Encode() error {
 
 	// Create a buffer to hold audio samples
 	buffer := make([]int32, e.minBlockSize*e.input.Channels())
+	frameNumber := 0
 	for {
 		// Read samples from the input
 		n, err := e.input.ReadSamples(buffer)
@@ -92,8 +97,13 @@ func (e *Encoder) Encode() error {
 			return fmt.Errorf("error reading input: %w", err)
 		}
 
+		// Feed raw bytes into MD5
+		for _, sample := range buffer[:n] {
+			e.md5Hash.Write(e.sampleToBytes(sample))
+		}
+
 		// Encode the block of samples
-		err = e.encodeBlock(buffer[:n])
+		err = e.encodeBlock(buffer[:n], frameNumber)
 		if err != nil {
 			return fmt.Errorf("error encoding block: %w", err)
 		}
@@ -101,8 +111,20 @@ func (e *Encoder) Encode() error {
 		if e.logging {
 			log.Printf("Encoded block of %d samples", n)
 		}
+		frameNumber++
 	}
 
+	e.md5sum = e.md5Hash.Sum(nil)
+
+	if _, err := e.output.Seek(26, io.SeekStart); err != nil {
+		return fmt.Errorf("error seeking to MD5 position: %w", err)
+	}
+	if _, err := e.output.Write(e.md5sum); err != nil {
+		return fmt.Errorf("error writing MD5 to STREAMINFO: %w", err)
+	}
+	if _, err := e.output.Seek(0, io.SeekEnd); err != nil {
+		return fmt.Errorf("error seeking to end for footer: %w", err)
+	}
 	// Write the stream footer
 	err = e.writeStreamFooter()
 	if err != nil {
@@ -114,6 +136,40 @@ func (e *Encoder) Encode() error {
 	}
 
 	return nil
+}
+
+/*
+sampleToBytes converts a single int32 audio sample into its raw byte representation
+based on the encoder's bit depth setting.
+
+The function performs the following steps:
+ 1. Allocates a byte buffer sized to the number of bytes required for the bit depth.
+ 2. Converts the sample into the appropriate byte format based on the bit depth:
+    - 8-bit: applies an unsigned bias of 128 to shift the signed value into unsigned range.
+    - 16-bit: encodes the sample as a little-endian 16-bit integer.
+    - 24-bit: encodes the sample as a little-endian 24-bit integer across 3 bytes.
+    - 32-bit: encodes the sample as a little-endian 32-bit integer.
+ 3. Returns the resulting byte slice.
+
+This function is used during the MD5 checksum calculation to feed raw audio bytes
+into the hash, ensuring the checksum matches the unencoded audio data.
+*/
+func (e *Encoder) sampleToBytes(sample int32) []byte {
+	buf := make([]byte, e.input.BitDepth()/8)
+	switch e.input.BitDepth() {
+	case 8:
+		buf[0] = byte(sample + 128) // unsigned bias
+	case 16:
+		binary.LittleEndian.PutUint16(buf, uint16(int16(sample)))
+	case 24:
+		val := uint32(sample)
+		buf[0] = byte(val)
+		buf[1] = byte(val >> 8)
+		buf[2] = byte(val >> 16)
+	case 32:
+		binary.LittleEndian.PutUint32(buf, uint32(sample))
+	}
+	return buf
 }
 
 /*
@@ -178,7 +234,7 @@ func (e *Encoder) writeStreamInfo() error {
 	// - MD5 signature of the unencoded audio data (16 bytes)
 
 	// Write the metadata block header for STREAMINFO with size 34 bytes
-	_, err := e.output.Write([]byte{0x00, 0x00, 0x00, 0x22})
+	_, err := e.output.Write([]byte{0x80, 0x00, 0x00, 0x22})
 	if err != nil {
 		return err
 	}
@@ -186,22 +242,27 @@ func (e *Encoder) writeStreamInfo() error {
 	// Create a byte array for STREAMINFO block, which is 34 bytes long
 	streamInfo := make([]byte, 34)
 
-	// Write the minimum block size (2 bytes)
+	// Pack the minimum and maximum block sizes into bytes 0-3 of the streamInfo array
 	binary.BigEndian.PutUint16(streamInfo[0:2], uint16(e.minBlockSize))
-
-	// Write the maximum block size (2 bytes)
 	binary.BigEndian.PutUint16(streamInfo[2:4], uint16(e.maxBlockSize))
 
-	// Write the sample rate (20 bits, left-shifted by 4 bits for alignment)
-	binary.BigEndian.PutUint32(streamInfo[10:14], uint32(e.input.SampleRate())<<4)
+	// Pack the sample rate (20 bits), channels (3 bits), bit depth (5 bits), and
+	// total samples (36 bits) into a single uint64 by bit-shifting each field into
+	// its correct position, then OR them together. The result is written into bytes
+	// 10-18 of the streamInfo array in big-endian order.
+	//
+	// Bit layout of the packed uint64 (64 bits total):
+	//   [63:44] - Sample rate (20 bits), shifted left by 44
+	//   [43:41] - Channels minus 1 (3 bits), shifted left by 41
+	//   [40:36] - Bit depth minus 1 (5 bits), shifted left by 36
+	//   [35:0]  - Total number of samples (36 bits)
+	packed := uint64(e.input.SampleRate())<<44 |
+		uint64(e.input.Channels()-1)<<41 |
+		uint64(e.input.BitDepth()-1)<<36 |
+		(uint64(e.input.TotalSamples()) & 0xFFFFFFFFF)
+	binary.BigEndian.PutUint64(streamInfo[10:18], packed)
 
-	// Write the number of channels (3 bits) and bits per sample (5 bits)
-	streamInfo[14] = byte(e.input.Channels()-1)<<4 | byte(e.input.BitDepth()-1)
-
-	// Write the total number of samples (36 bits)
-	binary.BigEndian.PutUint64(streamInfo[18:26], uint64(e.input.TotalSamples()))
-
-	// Write the MD5 signature of the unencoded audio data (16 bytes)
+	// Copy the 16-byte MD5 signature of the unencoded audio data into bytes 18-34
 	copy(streamInfo[18:], e.md5sum)
 
 	// Write the STREAMINFO block to the output
@@ -209,11 +270,13 @@ func (e *Encoder) writeStreamInfo() error {
 	return err
 }
 
+// File ends after last frame no footer
+// will always be true
 func (e *Encoder) writeStreamFooter() error {
 	if e.logging {
 		log.Println("Writing stream footer")
 	}
-	return fmt.Errorf("not implemented")
+	return nil
 }
 
 /*
@@ -221,18 +284,49 @@ encodeBlock is responsible for encoding a block of audio samples. Currently, thi
 
 The purpose of this function is to provide a starting point for the encoding process. In a complete implementation, this function would handle the compression and encoding of audio samples according to the FLAC specification. For now, it allows the rest of the encoding pipeline to be tested with raw audio data.
 */
-func (e *Encoder) encodeBlock(samples []int32) error {
-	if e.logging {
-		log.Printf("Encoding block of %d samples", len(samples))
+func (e *Encoder) encodeBlock(samples []int32, frameNumber int) error {
+	blockSize := len(samples) / e.input.Channels()
+
+	// --- Frame Header ---
+	header := []byte{
+		0xFF, // sync
+		0xF8, // sync | reserved | blocking_strategy(fixed=0)
+		e.blockSizeCode()<<4 | e.sampleRateCode(),
+		e.channelAssignCode()<<4 | e.sampleSizeCode()<<1,
+		byte(frameNumber), // frame number (simplified: single-byte for small values)
+	}
+	header = append(header, crc8(header))
+
+	if _, err := e.output.Write(header); err != nil {
+		return err
 	}
 
-	// For now, just write raw PCM data
-	for _, sample := range samples {
-		err := binary.Write(e.output, binary.LittleEndian, sample)
-		if err != nil {
-			return fmt.Errorf("error writing sample: %w", err)
+	// --- Subframes (one per channel) ---
+	channels := e.input.Channels()
+	for ch := 0; ch < channels; ch++ {
+		// Subframe header: VERBATIM (0x02)
+		if _, err := e.output.Write([]byte{0x02}); err != nil {
+			return err
+		}
+
+		// Raw samples for this channel
+		buf := make([]byte, blockSize*2) // 2 bytes per 16-bit sample
+		for i := 0; i < blockSize; i++ {
+			sample := samples[i*channels+ch]
+			binary.LittleEndian.PutUint16(buf[i*2:], uint16(int16(sample)))
+		}
+		if _, err := e.output.Write(buf); err != nil {
+			return err
 		}
 	}
+
+	// --- Frame Footer: CRC-16 ---
+	// For now, placeholder — CRC-16 requires buffering subframe data,
+	// or we compute it as we write. Simplest: write 0x0000.
+	if _, err := e.output.Write([]byte{0x00, 0x00}); err != nil {
+		return err
+	}
+
 	return nil
 }
 
@@ -314,4 +408,73 @@ func calcMinBlockSize(bitDepth, channels int) int {
 	}
 	// Returning 0 indicates that the provided bit depth or channel count is invalid.
 	return 0
+}
+
+func crc8(data []byte) byte {
+	crc := byte(0)
+	for _, b := range data {
+		crc ^= b
+		for range 8 {
+			if crc&0x80 != 0 {
+				crc = (crc << 1) ^ 0x07
+			} else {
+				crc <<= 1
+			}
+		}
+	}
+	return crc
+}
+
+func crc16(data []byte) uint16 {
+	crc := uint16(0)
+	for _, b := range data {
+		crc ^= uint16(b)
+		for range 8 {
+			if crc&0x0001 != 0 {
+				crc = (crc >> 1) ^ 0x8005
+			} else {
+				crc >>= 1
+			}
+		}
+	}
+	return crc // no final xor
+}
+
+func (e *Encoder) blockSizeCode() byte {
+	// 4096 = 2^12 → code 1101 (13)
+	switch e.maxBlockSize {
+	case 4096:
+		return 13 // 1101
+	// add others as needed
+	default:
+		return 13
+	}
+}
+
+func (e *Encoder) sampleRateCode() byte {
+	switch e.input.SampleRate() {
+	case 44100:
+		return 9 // 1001
+	default:
+		return 0 // get from STREAMINFO
+	}
+}
+
+func (e *Encoder) channelAssignCode() byte {
+	return byte(e.input.Channels() - 1) // 0-7, 0=mono, 1=stereo, etc.
+}
+
+func (e *Encoder) sampleSizeCode() byte {
+	switch e.input.BitDepth() {
+	case 8:
+		return 1
+	case 16:
+		return 3
+	case 24:
+		return 5
+	case 32:
+		return 6
+	default:
+		return 0
+	}
 }
