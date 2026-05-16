@@ -230,9 +230,8 @@ The writeStreamInfo function is responsible for writing the STREAMINFO metadata 
  1. Writes the metadata block header indicating a STREAMINFO block with a size of 34 bytes.
  2. Creates a 34-byte array to store STREAMINFO data.
  3. Fills the array with the minimum and maximum block sizes.
- 4. Writes the sample rate, left-shifted by 4 bits for alignment.
- 5. Encodes the number of channels and bits per sample into a single byte.
- 6. Writes the total number of samples.
+  4. Packs sample rate (20 bits), channels (3 bits), bit depth (5 bits), and total samples (36 bits) into a single uint64.
+  5. Writes the packed bitfield into the STREAMINFO array.
  7. Copies the MD5 checksum of the unencoded audio data into the array.
  8. Writes the STREAMINFO block to the output file.
 
@@ -248,9 +247,8 @@ func (e *Encoder) writeStreamInfo() error {
 	// - Maximum block size (2 bytes)
 	// - Minimum frame size (3 bytes)
 	// - Maximum frame size (3 bytes)
-	// - Sample rate (20 bits, left-shifted by 4 bits for alignment)
-	// - Number of channels (3 bits) and bits per sample (5 bits)
-	// - Total number of samples (36 bits)
+	// - Sample rate (20 bits), channels (3 bits), bit depth (5 bits), total samples (36 bits)
+	//   packed into a single uint64 at bytes 10-17
 	// - MD5 signature of the unencoded audio data (16 bytes)
 
 	// Write the metadata block header for STREAMINFO with size 34 bytes
