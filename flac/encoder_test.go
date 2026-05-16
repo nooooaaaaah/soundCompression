@@ -28,7 +28,7 @@ func TestNewEncoder(t *testing.T) {
 		},
 		{
 			name:          "Invalid audio format",
-			audioFilePath: "../sample.txt",
+			audioFilePath: "../testdata/bad.wav",
 			outputPath:    "test_output.flac",
 			expectedErr:   true,
 			expectedInput: nil,
@@ -36,7 +36,7 @@ func TestNewEncoder(t *testing.T) {
 			expectedMaxBS: DefaultMaxBlockSize,
 		}, {
 			name:          "Valid WAV input",
-			audioFilePath: "../sample.wav",
+			audioFilePath: "../testdata/sample.wav",
 			outputPath:    "test_output.flac",
 			expectedErr:   false,
 			expectedInput: nil, // Will be set after creating the audioFormat
@@ -119,7 +119,7 @@ func TestWriteStreamInfo(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			audioFormat, err := audio.NewWAVFormat("../sample.wav")
+			audioFormat, err := audio.NewWAVFormat("../testdata/sample.wav")
 			if err != nil {
 				t.Fatalf("failed to create audio format: %v", err)
 			}

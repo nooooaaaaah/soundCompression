@@ -89,6 +89,8 @@ Usage:
  3. Close the Encoder to ensure the output file is properly closed.
 */
 func (e *Encoder) Encode() error {
+	e.mu.Lock()
+	defer e.mu.Unlock()
 	success := false
 	defer func() {
 		if !success {
@@ -242,6 +244,9 @@ This function is crucial because the STREAMINFO block provides the decoder with 
 func (e *Encoder) writeStreamInfo() error {
 	if e.logging {
 		log.Println("Writing STREAMINFO metadata block")
+	}
+	if e.minBlockSize < 16 || e.minBlockSize > 65535 {
+		return fmt.Errorf("invalid min block size: %d (must be 16-65535)", e.minBlockSize)
 	}
 
 	// STREAMINFO block should be 34 bytes long and contain the following:
@@ -465,6 +470,8 @@ func (e *Encoder) encodeResidual(residual []int32) []byte {
 
 // Close closes the output FLAC file, ensuring all data is properly written and resources are released.
 func (e *Encoder) Close() error {
+	e.mu.Lock()
+	defer e.mu.Unlock()
 	if e.logging {
 		log.Println("Closing output file")
 	}

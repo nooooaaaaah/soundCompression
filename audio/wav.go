@@ -57,6 +57,7 @@ func NewWAVFormat(path string) (*WAVFormat, error) {
 
 // readHeader reads and validates the WAV file header.
 func (w *WAVFormat) readHeader() error {
+
 	// Read RIFF chunk
 	if err := binary.Read(w.file, binary.LittleEndian, &w.ChunkID); err != nil {
 		return fmt.Errorf("error reading ChunkID: %w", err)
@@ -95,6 +96,9 @@ func (w *WAVFormat) readHeader() error {
 			// read fmt fields
 			if err := binary.Read(w.file, binary.LittleEndian, &w.AudioFormat); err != nil {
 				return fmt.Errorf("error reading AudioFormat: %w", err)
+			}
+			if w.AudioFormat != 1 && w.AudioFormat != 0xFFFE {
+				return fmt.Errorf("unsupported audio format: %d (only PCM and EXTENSIBLE are supported)", w.AudioFormat)
 			}
 			if err := binary.Read(w.file, binary.LittleEndian, &w.NumChannels); err != nil {
 				return fmt.Errorf("error reading NumChannels: %w", err)

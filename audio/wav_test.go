@@ -6,7 +6,7 @@ import (
 )
 
 const (
-	sampleWavPath              = "../sample.wav"
+	sampleWavPath              = "../testdata/sample.wav"
 	nonExistentWavPath         = "../nonexistent.wav"
 	expectedSampleRate  uint32 = 44100
 	expectedChannels    uint16 = 2
