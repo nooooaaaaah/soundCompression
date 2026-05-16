@@ -2,6 +2,7 @@ package flac
 
 import (
 	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/nooooaaaaah/soundcompression/audio"
@@ -13,7 +14,6 @@ func TestNewEncoder(t *testing.T) {
 		audioFilePath string
 		outputPath    string
 		expectedErr   bool
-		expectedInput audio.Format
 		expectedMinBS int
 		expectedMaxBS int
 	}{
@@ -22,7 +22,6 @@ func TestNewEncoder(t *testing.T) {
 			audioFilePath: "../nonexistent.wav",
 			outputPath:    "test_output.flac",
 			expectedErr:   true,
-			expectedInput: nil,
 			expectedMinBS: 0,
 			expectedMaxBS: 0,
 		},
@@ -31,7 +30,6 @@ func TestNewEncoder(t *testing.T) {
 			audioFilePath: "../testdata/bad.wav",
 			outputPath:    "test_output.flac",
 			expectedErr:   true,
-			expectedInput: nil,
 			expectedMinBS: DefaultMinBlockSize,
 			expectedMaxBS: DefaultMaxBlockSize,
 		}, {
@@ -39,7 +37,6 @@ func TestNewEncoder(t *testing.T) {
 			audioFilePath: "../testdata/sample.wav",
 			outputPath:    "test_output.flac",
 			expectedErr:   false,
-			expectedInput: nil, // Will be set after creating the audioFormat
 			expectedMinBS: DefaultMinBlockSize,
 			expectedMaxBS: DefaultMaxBlockSize,
 		},
@@ -57,20 +54,18 @@ func TestNewEncoder(t *testing.T) {
 			}
 			defer audioFormat.Close()
 
-			tt.expectedInput = audioFormat
-
-			encoder, err := NewEncoder(audioFormat, tt.outputPath, true)
+			outputPath := filepath.Join(t.TempDir(), tt.outputPath)
+			encoder, err := NewEncoder(audioFormat, outputPath, true)
 			if (err != nil) != tt.expectedErr {
 				t.Fatalf("expected error: %v, got: %v", tt.expectedErr, err)
 			}
 			if err != nil {
 				return
 			}
-			defer os.Remove(tt.outputPath)
 			defer encoder.Close()
 
-			if encoder.input != tt.expectedInput {
-				t.Errorf("expected input to be %v, got %v", tt.expectedInput, encoder.input)
+			if encoder.input != audioFormat {
+				t.Errorf("expected input to be %v, got %v", audioFormat, encoder.input)
 			}
 			if encoder.minBlockSize != tt.expectedMinBS {
 				t.Errorf("expected minBlockSize to be %d, got %d", tt.expectedMinBS, encoder.minBlockSize)
@@ -148,21 +143,54 @@ func TestWriteStreamInfo(t *testing.T) {
 	}
 }
 
+func TestEncoderEncode(t *testing.T) {
+	audioFormat, err := audio.NewWAVFormat("../testdata/sample.wav")
+	if err != nil {
+		t.Fatalf("failed to create audio format: %v", err)
+	}
+	defer audioFormat.Close()
+
+	outputPath := filepath.Join(t.TempDir(), "output.flac")
+	encoder, err := NewEncoder(audioFormat, outputPath, false)
+	if err != nil {
+		t.Fatalf("NewEncoder failed: %v", err)
+	}
+
+	if err := encoder.Encode(); err != nil {
+		t.Fatalf("Encode failed: %v", err)
+	}
+	encoder.Close()
+
+	info, err := os.Stat(outputPath)
+	if err != nil {
+		t.Fatalf("output file stat failed: %v", err)
+	}
+	if info.Size() == 0 {
+		t.Fatal("output file is empty")
+	}
+
+	data, err := os.ReadFile(outputPath)
+	if err != nil {
+		t.Fatalf("failed to read output: %v", err)
+	}
+	if string(data[:4]) != "fLaC" {
+		t.Errorf("output starts with %q, want %q", data[:4], "fLaC")
+	}
+}
+
 func Test_crc16(t *testing.T) {
 	tests := []struct {
-		name string // description of this test case
-		// Named input parameters for target function.
+		name string
 		data []byte
 		want uint16
 	}{
-		// TODO: Add test cases.
+		{"empty", []byte{}, 0},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			got := crc16(tt.data)
-			// TODO: update the condition below to compare got with tt.want.
-			if true {
-				t.Errorf("crc16() = %v, want %v", got, tt.want)
+			if got != tt.want {
+				t.Errorf("crc16() = %04x, want %04x", got, tt.want)
 			}
 		})
 	}

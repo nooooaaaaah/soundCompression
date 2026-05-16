@@ -275,7 +275,9 @@ func (w *WAVFormat) bytesToInt32(bytes []byte) int32 {
 // Close closes the WAV file.
 func (w *WAVFormat) Close() error {
 	if w.file != nil {
-		return w.file.Close()
+		err := w.file.Close()
+		w.file = nil
+		return err
 	}
 	return nil
 }
