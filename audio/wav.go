@@ -32,23 +32,21 @@ type WAVFormat struct {
 	Subchunk2Size uint32  // NumSamples * NumChannels * BitsPerSample/8
 
 	// File handling
-	file       *os.File
-	dataOffset int64
+	file        *os.File
+	bytesBuffer []byte
+	dataOffset  int64
 }
 
 // NewWAVFormat opens a WAV file and reads its header.
 // file is left open
 func NewWAVFormat(path string) (*WAVFormat, error) {
-	if _, err := os.Stat(path); os.IsNotExist(err) {
-		return nil, fmt.Errorf("file does not exist: %w", err)
-	}
 
 	file, err := os.Open(path)
 	if err != nil {
 		return nil, fmt.Errorf("error opening file: %w", err)
 	}
 
-	wav := &WAVFormat{file: file}
+	wav := &WAVFormat{file: file, bytesBuffer: make([]byte, 4096)}
 	if err := wav.readHeader(); err != nil {
 		file.Close()
 		return nil, err
@@ -115,11 +113,43 @@ func (w *WAVFormat) readHeader() error {
 			}
 
 			// skip extra fmt bytes if Subchunk1Size is larger than 16
+
 			if w.Subchunk1Size > 16 {
-				if _, err := w.file.Seek(int64(chunkSize-16), io.SeekCurrent); err != nil {
-					return fmt.Errorf("error skipping extra fmt bytes: %w", err)
+				if w.AudioFormat == 0xFFFE {
+					var cbSize, validBits uint16
+					var chanMask uint32
+					var subFormat [16]byte
+
+					if err := binary.Read(w.file, binary.LittleEndian, &cbSize); err != nil {
+						return fmt.Errorf("error reading EXTENSIBLE cbSize: %w", err)
+					}
+					if err := binary.Read(w.file, binary.LittleEndian, &validBits); err != nil {
+						return fmt.Errorf("error reading valid bits per sample: %w", err)
+					}
+					if err := binary.Read(w.file, binary.LittleEndian, &chanMask); err != nil {
+						return fmt.Errorf("error reading channel mask: %w", err)
+					}
+					if err := binary.Read(w.file, binary.LittleEndian, &subFormat); err != nil {
+						return fmt.Errorf("error reading subformat GUID: %w", err)
+					}
+					if validBits > 0 && validBits <= 32 {
+						w.BitsPerSample = validBits
+					}
+					// Skip any bytes beyond the EXTENSIBLE fields
+					extra := int64(w.Subchunk1Size) - 16 - 24
+					if extra > 0 {
+						_, err := w.file.Seek(extra, io.SeekCurrent)
+						if err != nil {
+							return fmt.Errorf("error skipping extra fmt bytes: %w", err)
+						}
+					}
+				} else {
+					if _, err := w.file.Seek(int64(w.Subchunk1Size-16), io.SeekCurrent); err != nil {
+						return fmt.Errorf("error skipping extra fmt bytes: %w", err)
+					}
 				}
 			}
+
 		case "data":
 			foundData = true
 			w.Subchunk2ID = chunkID
@@ -171,17 +201,33 @@ func (w *WAVFormat) TotalSamples() uint64 {
 
 // ReadSamples reads audio samples into the provided buffer.
 func (w *WAVFormat) ReadSamples(buffer []int32) (int, error) {
+	if len(buffer) == 0 {
+		return 0, nil
+	}
+
 	// Calculate the number of bytes per sample based on bit depth.
 	bytesPerSample := w.BitDepth() / 8
 	samplesRead := 0
 
-	bytesBuffer := make([]byte, len(buffer)*bytesPerSample)
+	needed := len(buffer) * bytesPerSample
+	if cap(w.bytesBuffer) < needed {
+		w.bytesBuffer = make([]byte, needed)
+	}
+	bytesBuffer := w.bytesBuffer[:needed]
 
-	n, err := w.file.Read(bytesBuffer)
-	if err != nil && err != io.EOF {
+	n, err := io.ReadFull(w.file, bytesBuffer)
+	if err != nil && err != io.EOF && err != io.ErrUnexpectedEOF {
 		return 0, fmt.Errorf("error reading audio data: %w", err)
 	}
-
+	if n == 0 {
+		return 0, io.EOF
+	}
+	if err == io.ErrUnexpectedEOF {
+		err = io.EOF
+	}
+	if n%bytesPerSample != 0 {
+		return 0, fmt.Errorf("corrupt input: %d bytes is not aligned to %d-byte sample size", n, bytesPerSample)
+	}
 	samplesRead = n / bytesPerSample
 
 	// Convert the raw byte data into 32-bit integer samples.
@@ -195,13 +241,17 @@ func (w *WAVFormat) ReadSamples(buffer []int32) (int, error) {
 
 // bytesToInt32 converts a byte slice to a 32-bit integer based on the bit depth.
 func (w *WAVFormat) bytesToInt32(bytes []byte) int32 {
+	if len(bytes) < w.BitDepth()/8 {
+		return 0
+	}
+
 	switch w.BitDepth() {
 	case 8:
 		// convert the byte directly and adjust for unsigned range.
 		return int32(bytes[0]) - 128
 	case 16:
 		// convert the byte slice to a 16-bit integer.
-		return int32(int16(binary.LittleEndian.Uint16(bytes)))
+		return int32(int16(bytes[0]) | int16(bytes[1])<<8)
 	case 24:
 		// manually construct the 32-bit integer and handle sign extension.
 		sample := int32(bytes[0]) | int32(bytes[1])<<8 | int32(bytes[2])<<16
@@ -211,7 +261,7 @@ func (w *WAVFormat) bytesToInt32(bytes []byte) int32 {
 		return sample
 	case 32:
 		// convert the byte slice to a 32-bit integer.
-		return int32(binary.LittleEndian.Uint32(bytes))
+		return int32(bytes[0]) | int32(bytes[1])<<8 | int32(bytes[2])<<16 | int32(bytes[3])<<24
 	default:
 		// Return 0 for unsupported bit depths.
 		return 0
