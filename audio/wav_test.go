@@ -14,7 +14,7 @@ const (
 	expectedChunk              = "RIFF"
 	expectedFormat             = "WAVE"
 	expectedSubChunkOne        = "fmt "
-	expectedsubChunkTwo        = "data"
+	expectedSubChunkTwo        = "data"
 )
 
 func TestNewWAVFormat(t *testing.T) {

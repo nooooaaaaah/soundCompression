@@ -133,7 +133,7 @@ func (w *WAVFormat) readHeader() error {
 			w.dataOffset = dataOffset
 
 		default:
-			// skip unkown chunk
+			// skip unknown chunk
 			// pads if odd size
 			skipSize := int64(chunkSize)
 			if chunkSize%2 != 0 {

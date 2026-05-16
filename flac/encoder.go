@@ -61,7 +61,7 @@ func NewEncoder(input audio.Format, outputPath string, logging bool) (*Encoder, 
 		return nil, fmt.Errorf("channels must be between 1 and 8")
 	}
 
-	// Enforce the requirments of a FLAC encoder
+	// Enforce the requirements of a FLAC encoder
 	return &Encoder{
 		input:        input,
 		output:       outputFile,
@@ -207,7 +207,7 @@ func (e *Encoder) writeStreamHeader() error {
 		log.Println("Writing stream header")
 	}
 
-	// marker for flac metadata
+	// marker for FLAC metadata
 	_, err := e.output.Write([]byte("fLaC"))
 	if err != nil {
 		return err
@@ -463,7 +463,7 @@ func (e *Encoder) encodeResidual(residual []int32) []byte {
 	return out
 }
 
-// Close closes the output flac file, ensuring all data is properly written and resources are released.
+// Close closes the output FLAC file, ensuring all data is properly written and resources are released.
 func (e *Encoder) Close() error {
 	if e.logging {
 		log.Println("Closing output file")
