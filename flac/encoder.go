@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"hash"
 	"io"
-	"math"
 	"os"
 
 	"log"
@@ -21,6 +20,12 @@ const (
 	DefaultMaxBlockSize = 4096
 )
 
+// The Encoder struct contains:
+//   - input: an audio.Format interface representing the audio data to be encoded.
+//   - output: a file where the encoded FLAC data will be written.
+//   - minBlockSize and maxBlockSize: parameters that define the minimum and maximum block sizes for encoding.
+//   - md5sum: a byte slice to store the MD5 checksum of the unencoded audio data.
+//   - verbose: a boolean flag to enable verbose logging.
 type Encoder struct {
 	input        audio.Format
 	output       *os.File
@@ -57,7 +62,7 @@ func NewEncoder(input audio.Format, outputPath string, logging bool) (*Encoder, 
 		return nil, fmt.Errorf("channels must be between 1 and 8")
 	}
 
-	// Enforce the requriemnts of a flac encoder
+	// Enforce the requirments of a FLAC encoder
 	return &Encoder{
 		input:        input,
 		output:       outputFile,
@@ -70,13 +75,6 @@ func NewEncoder(input audio.Format, outputPath string, logging bool) (*Encoder, 
 
 /*
 Encoder is responsible for encoding raw audio data into the FLAC format.
-
-The Encoder struct contains:
-  - input: an audio.Format interface representing the audio data to be encoded.
-  - output: a file where the encoded FLAC data will be written.
-  - minBlockSize and maxBlockSize: parameters that define the minimum and maximum block sizes for encoding.
-  - md5sum: a byte slice to store the MD5 checksum of the unencoded audio data.
-  - verbose: a boolean flag to enable verbose logging.
 
 The Encode method is the main function that handles the encoding process. It performs the following steps:
  1. Writes the stream header, including the FLAC marker and STREAMINFO metadata block.
@@ -416,28 +414,6 @@ func (e *Encoder) Close() error {
 		outputErr = e.output.Close()
 	}
 	return outputErr
-}
-
-/*
-calcMinBlockSize calculates the minimum block size for FLAC encoding.
-
-The function ensures the bit depth is within the valid range (4-32 bits) and that the number of channels is valid (1-8 channels). It performs the following steps:
- 1. Validates the bit depth and channel count.
- 2. Calculates the total number of bits required for the minimum block size (16 samples).
- 3. Returns the minimum block size in bytes.
-
-The minimum block size affects the overall compression efficiency and latency of the encoded audio. If the bit depth or channels are out of the valid range, the function returns 0 to indicate an error.
-*/
-func calcMinBlockSize(bitDepth, channels int) int {
-	const minSamples = 16
-	if bitDepth >= 4 && bitDepth <= 32 {
-		if channels >= 1 && channels <= 8 {
-			totalBits := minSamples * bitDepth * channels
-			return int(math.Ceil(float64(totalBits) / 8))
-		}
-	}
-	// Returning 0 indicates that the provided bit depth or channel count is invalid.
-	return 0
 }
 
 func crc8(data []byte) byte {
