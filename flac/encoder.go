@@ -40,8 +40,24 @@ func NewEncoder(input audio.Format, outputPath string, logging bool) (*Encoder, 
 		return nil, fmt.Errorf("error creating output file: %w", err)
 	}
 
-	// Enforce the requriemnts of a flac encoder
+	sampleRate := input.SampleRate()
+	bitDepth := input.BitDepth()
+	channels := input.Channels()
 
+	if sampleRate < 1 || sampleRate > 1048575 {
+		outputFile.Close()
+		return nil, fmt.Errorf("sample rate must be between 1 and 1048575")
+	}
+	if bitDepth < 4 || bitDepth > 32 {
+		outputFile.Close()
+		return nil, fmt.Errorf("bit depth must be between 4 and 32")
+	}
+	if channels < 1 || channels > 8 {
+		outputFile.Close()
+		return nil, fmt.Errorf("channels must be between 1 and 8")
+	}
+
+	// Enforce the requriemnts of a flac encoder
 	return &Encoder{
 		input:        input,
 		output:       outputFile,
@@ -74,6 +90,13 @@ Usage:
  3. Close the Encoder to ensure the output file is properly closed.
 */
 func (e *Encoder) Encode() error {
+	success := false
+	defer func() {
+		if !success {
+			e.output.Close()
+			os.Remove(e.output.Name())
+		}
+	}()
 	if e.logging {
 		log.Println("Starting encoding process")
 	}
@@ -134,7 +157,7 @@ func (e *Encoder) Encode() error {
 	if e.logging {
 		log.Println("Finished encoding process")
 	}
-
+	success = true
 	return nil
 }
 
@@ -245,6 +268,13 @@ func (e *Encoder) writeStreamInfo() error {
 	// Pack the minimum and maximum block sizes into bytes 0-3 of the streamInfo array
 	binary.BigEndian.PutUint16(streamInfo[0:2], uint16(e.minBlockSize))
 	binary.BigEndian.PutUint16(streamInfo[2:4], uint16(e.maxBlockSize))
+	frameSize := uint32(6 + e.input.Channels()*(1+e.maxBlockSize*2) + 2)
+	streamInfo[4] = byte(frameSize >> 16)
+	streamInfo[5] = byte(frameSize >> 8)
+	streamInfo[6] = byte(frameSize)
+	streamInfo[7] = byte(frameSize >> 16)
+	streamInfo[8] = byte(frameSize >> 8)
+	streamInfo[9] = byte(frameSize)
 
 	// Pack the sample rate (20 bits), channels (3 bits), bit depth (5 bits), and
 	// total samples (36 bits) into a single uint64 by bit-shifting each field into

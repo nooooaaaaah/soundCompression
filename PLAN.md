@@ -38,22 +38,22 @@ Write as a single uint64 big-endian. MD5 goes at bytes 18-33.
 ### ~~P1.5 Stream footer~~
 `flac/encoder.go:212-217` — Write end-of-stream marker or pad byte instead of returning error.
 
-### P1.6 WAV chunk parsing
+### ~~P1.6 WAV chunk parsing~~
 `audio/wav.go:61-102` — Skip unknown chunks when seeking `fmt ` and `data` sub-chunks. Handle `Subchunk1Size > 16` (WAV_FORMAT_EXTENSIBLE). Account for odd-sized chunk padding bytes.
 
-### P1.7 Input validation
+### ~~P1.7 Input validation~~
 `flac/encoder.go:34-49,72-117` — Validate block sizes (16-65535), sample rates (fit in 20 bits), bit depths (4-32), channel counts (1-8). Return descriptive errors.
 
-### P1.8 Min/max frame size in STREAMINFO
+### ~~P1.8 Min/max frame size in STREAMINFO~~
 `flac/encoder.go:189-207` — Write min frame size (bytes 4-6) and max frame size (bytes 7-9) as 24-bit big-endian values, or document they are intentionally 0 (meaning "unknown").
 
-### P1.9 Total samples / MD5 offset conflict
+### ~~P1.9 Total samples / MD5 offset conflict~~
 `flac/encoder.go:202,205` — Remove the incorrect `PutUint64` at offset 18 — total samples goes in the packed bitfield at bytes 10-17, not at 18. MD5 should be the only thing at bytes 18-33.
 
-### P1.10 Encode cleanup on failure
+### ~~P1.10 Encode cleanup on failure~~
 `flac/encoder.go:72-117` — If `Encode()` fails partway through, close and remove the partial output file so no corrupt file is left on disk.
 
-### P1.11 Stream footer implementation
+### ~~P1.11 Stream footer implementation~~
 `flac/encoder.go:212-217` — `writeStreamFooter` always returns `"not implemented"`, causing every `Encode()` call to fail. Implement it (minimally: no explicit end marker needed after last frame, or write a padding byte).
 
 ## Phase 1b: Code Quality & Technical Debt
