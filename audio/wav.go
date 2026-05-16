@@ -67,36 +67,84 @@ func (w *WAVFormat) readHeader() error {
 		return fmt.Errorf("not a valid RIFF file")
 	}
 
-	headerFields := []any{
-		&w.ChunkSize, &w.Format,
-		&w.Subchunk1ID, &w.Subchunk1Size, &w.AudioFormat,
-		&w.NumChannels, &w.Samplerate, &w.ByteRate,
-		&w.BlockAlign, &w.BitsPerSample,
-		&w.Subchunk2ID, &w.Subchunk2Size,
+	if err := binary.Read(w.file, binary.LittleEndian, &w.ChunkSize); err != nil {
+		return fmt.Errorf("error reading ChunkSize: %w", err)
 	}
 
-	for _, field := range headerFields {
-		if err := binary.Read(w.file, binary.LittleEndian, field); err != nil {
-			return fmt.Errorf("error reading WAV header: %w", err)
-		}
+	if err := binary.Read(w.file, binary.LittleEndian, &w.Format); err != nil {
+		return fmt.Errorf("error reading Format: %w", err)
 	}
-
 	if string(w.Format[:]) != "WAVE" {
 		return fmt.Errorf("not a valid WAVE file")
 	}
-	if string(w.Subchunk1ID[:]) != "fmt " {
-		return fmt.Errorf("fmt sub-chunk not found")
-	}
-	if string(w.Subchunk2ID[:]) != "data" {
-		return fmt.Errorf("data sub-chunk not found")
-	}
 
-	// Store the offset where the audio data begins
-	dataOffset, err := w.file.Seek(0, io.SeekCurrent)
-	if err != nil {
-		return fmt.Errorf("error getting data offset: %w", err)
+	var foundFmt, foundData bool
+	for !foundFmt || !foundData {
+		var chunkID [4]byte
+		var chunkSize uint32
+		if err := binary.Read(w.file, binary.LittleEndian, &chunkID); err != nil {
+			return fmt.Errorf("error reading chunk ID: %w", err)
+		}
+		if err := binary.Read(w.file, binary.LittleEndian, &chunkSize); err != nil {
+			return fmt.Errorf("error reading chunk size: %w", err)
+		}
+
+		switch string(chunkID[:]) {
+		case "fmt ":
+			foundFmt = true
+			w.Subchunk1ID = chunkID
+			w.Subchunk1Size = chunkSize
+			// read fmt fields
+			if err := binary.Read(w.file, binary.LittleEndian, &w.AudioFormat); err != nil {
+				return fmt.Errorf("error reading AudioFormat: %w", err)
+			}
+			if err := binary.Read(w.file, binary.LittleEndian, &w.NumChannels); err != nil {
+				return fmt.Errorf("error reading NumChannels: %w", err)
+			}
+			if err := binary.Read(w.file, binary.LittleEndian, &w.Samplerate); err != nil {
+				return fmt.Errorf("error reading Samplerate: %w", err)
+			}
+			if err := binary.Read(w.file, binary.LittleEndian, &w.ByteRate); err != nil {
+				return fmt.Errorf("error reading ByteRate: %w", err)
+			}
+			if err := binary.Read(w.file, binary.LittleEndian, &w.BlockAlign); err != nil {
+				return fmt.Errorf("error reading BlockAlign: %w", err)
+			}
+			if err := binary.Read(w.file, binary.LittleEndian, &w.BitsPerSample); err != nil {
+				return fmt.Errorf("error reading BitsPerSample: %w", err)
+			}
+
+			// skip extra fmt bytes if Subchunk1Size is larger than 16
+			if w.Subchunk1Size > 16 {
+				if _, err := w.file.Seek(int64(chunkSize-16), io.SeekCurrent); err != nil {
+					return fmt.Errorf("error skipping extra fmt bytes: %w", err)
+				}
+			}
+		case "data":
+			foundData = true
+			w.Subchunk2ID = chunkID
+			w.Subchunk2Size = chunkSize
+
+			// store the offset where audio data begins
+			dataOffset, err := w.file.Seek(0, io.SeekCurrent)
+			if err != nil {
+				return fmt.Errorf("error getting data offset: %w", err)
+			}
+			w.dataOffset = dataOffset
+
+		default:
+			// skip unkown chunk
+			// pads if odd size
+			skipSize := int64(chunkSize)
+			if chunkSize%2 != 0 {
+				skipSize++
+			}
+			if _, err := w.file.Seek(skipSize, io.SeekCurrent); err != nil {
+				return fmt.Errorf("error skipping unknown chunk: %w", err)
+			}
+		}
+
 	}
-	w.dataOffset = dataOffset
 
 	return nil
 }
