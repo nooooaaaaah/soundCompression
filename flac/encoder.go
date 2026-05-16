@@ -6,9 +6,8 @@ import (
 	"fmt"
 	"hash"
 	"io"
-	"os"
-
 	"log"
+	"os"
 
 	"github.com/nooooaaaaah/soundcompression/audio"
 )
@@ -378,8 +377,19 @@ func (e *Encoder) predictSamples(samples []int32) ([]int32, []int32) {
 		log.Println("Predicting samples using LPC")
 	}
 
-	// Implementation...
-	return nil, nil
+	if len(samples) == 0 {
+		return []int32{}, []int32{}
+	}
+
+	// Placeholder: use constant (zero-order) prediction.
+	// Predicted value is always 0; residual equals the original sample.
+	predicted := make([]int32, len(samples))
+	residuals := make([]int32, len(samples))
+	for i, s := range samples {
+		predicted[i] = 0
+		residuals[i] = s - predicted[i]
+	}
+	return predicted, residuals
 }
 
 /*
@@ -399,8 +409,58 @@ func (e *Encoder) encodeResidual(residual []int32) []byte {
 		log.Println("Encoding residuals")
 	}
 
-	// Implementation...
-	return nil
+	if len(residual) == 0 {
+		return []byte{}
+	}
+
+	// Calculate optimal Rice parameter by finding the average magnitude
+	var sum int64
+	for _, r := range residual {
+		if r < 0 {
+			sum += int64(-r)
+		} else {
+			sum += int64(r)
+		}
+	}
+	avg := sum / int64(len(residual))
+
+	// Estimate Rice parameter k such that 2^k ≈ avg
+	k := byte(0)
+	for k < 14 && (1<<k) < int(avg) {
+		k++
+	}
+
+	// Encode using Rice coding
+	// Output format: 4-bit Rice parameter, followed by Rice-coded residuals
+	var out []byte
+	out = append(out, k)
+
+	for _, r := range residual {
+		// Map signed to unsigned (zigzag encoding)
+		var u uint32
+		if r < 0 {
+			u = uint32((-r)<<1) - 1
+		} else {
+			u = uint32(r << 1)
+		}
+
+		// Rice encode: quotient in unary + remainder in binary
+		q := u >> k
+		rem := u & ((1 << k) - 1)
+
+		// Write q ones followed by a zero (unary)
+		for range q {
+			out = append(out, 1)
+		}
+		out = append(out, 0)
+
+		// Write remainder bits (k bits)
+		if k > 0 {
+			out = append(out, byte(rem))
+		}
+	}
+
+	return out
 }
 
 // Close closes the output flac file, ensuring all data is properly written and resources are released.
