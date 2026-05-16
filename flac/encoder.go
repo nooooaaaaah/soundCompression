@@ -8,6 +8,7 @@ import (
 	"io"
 	"log"
 	"os"
+	"sync"
 
 	"github.com/nooooaaaaah/soundcompression/audio"
 )
@@ -26,6 +27,7 @@ const (
 //   - md5sum: a byte slice to store the MD5 checksum of the unencoded audio data.
 //   - verbose: a boolean flag to enable verbose logging.
 type Encoder struct {
+	mu           sync.Mutex
 	input        audio.Format
 	output       *os.File
 	minBlockSize int
@@ -230,8 +232,8 @@ The writeStreamInfo function is responsible for writing the STREAMINFO metadata 
  1. Writes the metadata block header indicating a STREAMINFO block with a size of 34 bytes.
  2. Creates a 34-byte array to store STREAMINFO data.
  3. Fills the array with the minimum and maximum block sizes.
-  4. Packs sample rate (20 bits), channels (3 bits), bit depth (5 bits), and total samples (36 bits) into a single uint64.
-  5. Writes the packed bitfield into the STREAMINFO array.
+ 4. Packs sample rate (20 bits), channels (3 bits), bit depth (5 bits), and total samples (36 bits) into a single uint64.
+ 5. Writes the packed bitfield into the STREAMINFO array.
  7. Copies the MD5 checksum of the unencoded audio data into the array.
  8. Writes the STREAMINFO block to the output file.
 
