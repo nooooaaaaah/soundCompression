@@ -1,6 +1,7 @@
 package flac
 
 import (
+	"bytes"
 	"os"
 	"path/filepath"
 	"testing"
@@ -191,6 +192,42 @@ func Test_crc16(t *testing.T) {
 			got := crc16(tt.data)
 			if got != tt.want {
 				t.Errorf("crc16() = %04x, want %04x", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestEncoder_writeFixedSubframe(t *testing.T) {
+	tests := []struct {
+		name string // description of this test case
+		// Named input parameters for receiver constructor.
+		input      audio.Format
+		outputPath string
+		logging    bool
+		// Named input parameters for target function.
+		buf      *bytes.Buffer
+		samples  []int32
+		bitDepth int
+		order    int
+		wantErr  bool
+	}{
+		// TODO: Add test cases.
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			e, err := NewEncoder(tt.input, tt.outputPath, tt.logging)
+			if err != nil {
+				t.Fatalf("could not construct receiver type: %v", err)
+			}
+			gotErr := e.writeFixedSubframe(tt.buf, tt.samples, tt.bitDepth, tt.order)
+			if gotErr != nil {
+				if !tt.wantErr {
+					t.Errorf("writeFixedSubframe() failed: %v", gotErr)
+				}
+				return
+			}
+			if tt.wantErr {
+				t.Fatal("writeFixedSubframe() succeeded unexpectedly")
 			}
 		})
 	}

@@ -1,12 +1,14 @@
 package flac
 
 import (
+	"bytes"
 	"crypto/md5"
 	"encoding/binary"
 	"fmt"
 	"hash"
 	"io"
 	"log"
+	"math"
 	"os"
 	"sync"
 
@@ -35,6 +37,44 @@ type Encoder struct {
 	md5Hash      hash.Hash
 	md5sum       []byte
 	logging      bool
+}
+
+type bitWriter struct {
+	buf      *bytes.Buffer
+	buffer   byte
+	bitCount int
+}
+
+func newBitWriter() *bitWriter {
+	return &bitWriter{
+		buf: &bytes.Buffer{},
+	}
+}
+
+func (bw *bitWriter) writeBit(bit byte) {
+	if bit&1 == 1 {
+		bw.buffer |= 1 << (7 - bw.bitCount)
+	}
+	bw.bitCount++
+	if bw.bitCount == 8 {
+		bw.buf.WriteByte(bw.buffer)
+		bw.buffer = 0
+		bw.bitCount = 0
+	}
+}
+
+func (bw *bitWriter) writeBits(val uint32, n int) {
+	for i := n - 1; i >= 0; i-- {
+		bw.writeBit(byte((val >> uint(i)) & 1))
+	}
+}
+
+func (bw *bitWriter) flush() {
+	if bw.bitCount > 0 {
+		bw.buf.WriteByte(bw.buffer)
+		bw.buffer = 0
+		bw.bitCount = 0
+	}
 }
 
 // NewEncoder initializes a new Encoder instance for encoding audio data into the FLAC format.
@@ -316,50 +356,113 @@ encodeBlock is responsible for encoding a block of audio samples. Currently, thi
 
 The purpose of this function is to provide a starting point for the encoding process. In a complete implementation, this function would handle the compression and encoding of audio samples according to the FLAC specification. For now, it allows the rest of the encoding pipeline to be tested with raw audio data.
 */
+func (e *Encoder) writeChannelSubframe(buf *bytes.Buffer, samples []int32, bitDepth int) error {
+	if allEqual(samples) {
+		return e.writeConstantSubframe(buf, samples[0], bitDepth)
+	}
+
+	// Try FIXED orders
+	bestOrder := 0
+	bestSize := e.estimateFixedSubframeSize(samples, 0)
+	isLPC := false
+	for order := 1; order <= 4; order++ {
+		if size := e.estimateFixedSubframeSize(samples, order); size < bestSize {
+			bestSize = size
+			bestOrder = order
+		}
+	}
+
+	// Try LPC orders for sufficiently large blocks
+	if len(samples) >= 32 {
+		lpcOrders := []int{8, 10, 12}
+		for _, order := range lpcOrders {
+			if order >= len(samples)/2 {
+				continue
+			}
+			if size := e.estimateLPCSubframeSize(samples, order); size < bestSize {
+				bestSize = size
+				bestOrder = order
+				isLPC = true
+			}
+		}
+	}
+
+	if isLPC {
+		return e.writeLPCSubframe(buf, samples, bitDepth, bestOrder)
+	}
+	return e.writeFixedSubframe(buf, samples, bitDepth, bestOrder)
+}
+
 func (e *Encoder) encodeBlock(samples []int32, frameNumber int) error {
 	blockSize := len(samples) / e.input.Channels()
+	channels := e.input.Channels()
+	bitDepth := e.input.BitDepth()
 
-	// --- Frame Header ---
+	// Try independent channels
+	var indBuf bytes.Buffer
+	for ch := range channels {
+		chanSamples := make([]int32, blockSize)
+		for i := range blockSize {
+			chanSamples[i] = samples[i*channels+ch]
+		}
+		if err := e.writeChannelSubframe(&indBuf, chanSamples, bitDepth); err != nil {
+			return err
+		}
+	}
+
+	// Try mid-side for stereo
+	var msBuf bytes.Buffer
+	tryMidSide := channels == 2
+	if tryMidSide {
+		mid := make([]int32, blockSize)
+		side := make([]int32, blockSize)
+		for i := range blockSize {
+			mid[i] = (samples[i*2] + samples[i*2+1]) >> 1
+			side[i] = samples[i*2] - samples[i*2+1]
+		}
+		if err := e.writeChannelSubframe(&msBuf, mid, bitDepth); err != nil {
+			return err
+		}
+		if err := e.writeChannelSubframe(&msBuf, side, bitDepth); err != nil {
+			return err
+		}
+	}
+
+	// Pick best channel assignment
+	chanAssign := byte(channels - 1)
+	subframeBytes := indBuf.Bytes()
+	if tryMidSide && msBuf.Len() < indBuf.Len() {
+		chanAssign = 10 // mid-side
+		subframeBytes = msBuf.Bytes()
+	}
+
+	// Frame header
 	header := []byte{
-		0xFF, // sync
-		0xF8, // sync | reserved | blocking_strategy(fixed=0)
+		0xFF, 0xF8,
 		e.blockSizeCode()<<4 | e.sampleRateCode(),
-		e.channelAssignCode()<<4 | e.sampleSizeCode()<<1,
-		byte(frameNumber), // frame number (simplified: single-byte for small values)
+		chanAssign<<4 | e.sampleSizeCode()<<1,
+		byte(frameNumber),
 	}
 	header = append(header, crc8(header))
 
-	if _, err := e.output.Write(header); err != nil {
+	var frameBuf bytes.Buffer
+	if _, err := frameBuf.Write(header); err != nil {
+		return err
+	}
+	if _, err := frameBuf.Write(subframeBytes); err != nil {
 		return err
 	}
 
-	// --- Subframes (one per channel) ---
-	channels := e.input.Channels()
-	for ch := 0; ch < channels; ch++ {
-		// Subframe header: VERBATIM (0x02)
-		if _, err := e.output.Write([]byte{0x02}); err != nil {
-			return err
-		}
-
-		// Raw samples for this channel
-		buf := make([]byte, blockSize*2) // 2 bytes per 16-bit sample
-		for i := 0; i < blockSize; i++ {
-			sample := samples[i*channels+ch]
-			binary.LittleEndian.PutUint16(buf[i*2:], uint16(int16(sample)))
-		}
-		if _, err := e.output.Write(buf); err != nil {
-			return err
-		}
-	}
-
-	// --- Frame Footer: CRC-16 ---
-	// For now, placeholder — CRC-16 requires buffering subframe data,
-	// or we compute it as we write. Simplest: write 0x0000.
-	if _, err := e.output.Write([]byte{0x00, 0x00}); err != nil {
+	// CRC-16 footer
+	crc := crc16(frameBuf.Bytes())
+	crcBytes := make([]byte, 2)
+	binary.LittleEndian.PutUint16(crcBytes, crc)
+	if _, err := frameBuf.Write(crcBytes); err != nil {
 		return err
 	}
 
-	return nil
+	_, err := e.output.Write(frameBuf.Bytes())
+	return err
 }
 
 /*
@@ -377,7 +480,7 @@ The function returns two slices of int32:
 
 This function is crucial for the compression efficiency of the FLAC encoder, as it reduces the amount of data that needs to be stored by leveraging the predictability of audio signals.
 */
-func (e *Encoder) predictSamples(samples []int32) ([]int32, []int32) {
+func (e *Encoder) predictSamples(samples []int32, order int) ([]int32, []int32) {
 	if e.logging {
 		log.Println("Predicting samples using LPC")
 	}
@@ -386,14 +489,31 @@ func (e *Encoder) predictSamples(samples []int32) ([]int32, []int32) {
 		return []int32{}, []int32{}
 	}
 
-	// Placeholder: use constant (zero-order) prediction.
-	// Predicted value is always 0; residual equals the original sample.
 	predicted := make([]int32, len(samples))
 	residuals := make([]int32, len(samples))
+
 	for i, s := range samples {
-		predicted[i] = 0
-		residuals[i] = s - predicted[i]
+		var pred int32
+		if i < order {
+			pred = 0
+		} else {
+			switch order {
+			case 0:
+				pred = 0
+			case 1:
+				pred = samples[i-1]
+			case 2:
+				pred = 2*samples[i-1] - samples[i-2]
+			case 3:
+				pred = 3*samples[i-1] - 3*samples[i-2] + samples[i-3]
+			case 4:
+				pred = 4*samples[i-1] - 6*samples[i-2] + 4*samples[i-3] - samples[i-4]
+			}
+		}
+		predicted[i] = pred
+		residuals[i] = s - pred
 	}
+
 	return predicted, residuals
 }
 
@@ -409,36 +529,10 @@ The function performs the following steps:
 
 Proper implementation of this function is crucial for achieving high compression ratios in the FLAC format.
 */
-func (e *Encoder) encodeResidual(residual []int32) []byte {
-	if e.logging {
-		log.Println("Encoding residuals")
-	}
-
+func (e *Encoder) encodeResidual(bw *bitWriter, residual []int32, k int) {
 	if len(residual) == 0 {
-		return []byte{}
+		return
 	}
-
-	// Calculate optimal Rice parameter by finding the average magnitude
-	var sum int64
-	for _, r := range residual {
-		if r < 0 {
-			sum += int64(-r)
-		} else {
-			sum += int64(r)
-		}
-	}
-	avg := sum / int64(len(residual))
-
-	// Estimate Rice parameter k such that 2^k ≈ avg
-	k := byte(0)
-	for k < 14 && (1<<k) < int(avg) {
-		k++
-	}
-
-	// Encode using Rice coding
-	// Output format: 4-bit Rice parameter, followed by Rice-coded residuals
-	var out []byte
-	out = append(out, k)
 
 	for _, r := range residual {
 		// Map signed to unsigned (zigzag encoding)
@@ -455,17 +549,277 @@ func (e *Encoder) encodeResidual(residual []int32) []byte {
 
 		// Write q ones followed by a zero (unary)
 		for range q {
-			out = append(out, 1)
+			bw.writeBit(1)
 		}
-		out = append(out, 0)
+		bw.writeBit(0)
 
 		// Write remainder bits (k bits)
 		if k > 0 {
-			out = append(out, byte(rem))
+			bw.writeBits(rem, k)
+		}
+	}
+}
+
+func calcRiceParameter(residual []int32) int {
+	var sum int64
+	for _, r := range residual {
+		if r < 0 {
+			sum += int64(-r)
+		} else {
+			sum += int64(r)
+		}
+	}
+	if len(residual) == 0 {
+		return 0
+	}
+	avg := sum / int64(len(residual))
+	k := 0
+	for k < 14 && (1<<k) < int(avg) {
+		k++
+	}
+	return k
+}
+
+func (e *Encoder) writeFixedSubframe(buf *bytes.Buffer, samples []int32, bitDepth int, order int) error {
+	// Validate order: fixed predictor order must be 0–4
+	if order < 0 || order > 4 {
+		return fmt.Errorf("invalid fixed predictor order: %d (must be 0–4)", order)
+	}
+	if len(samples) < order {
+		return fmt.Errorf("not enough samples (%d) for fixed subframe order %d", len(samples), order)
+	}
+
+	// 1. byte: 0x20 | order (subframe header)
+	if err := buf.WriteByte(0x20 | byte(order)); err != nil {
+		return err
+	}
+
+	// 2. warm-up: order raw samples via sampleToBytes
+	for i := 0; i < order && i < len(samples); i++ {
+		if _, err := buf.Write(e.sampleToBytes(samples[i])); err != nil {
+			return err
 		}
 	}
 
-	return out
+	// 3. compute residuals via predictSamples
+	_, residuals := e.predictSamples(samples, order)
+
+	// 4. byte: residual coding method (order << 2 | method) method = 0
+	if err := buf.WriteByte(0x00); err != nil {
+		return err
+	}
+
+	// 5. byte: Rice parameter (k << 4) — upper nibble, lower nibble (partition order) = 0
+	res := residuals[order:]
+	k := calcRiceParameter(res)
+	if err := buf.WriteByte(byte(k) << 4); err != nil {
+		return err
+	}
+
+	// 6. encode residual data using Rice coding
+	bw := newBitWriter()
+	e.encodeResidual(bw, res, k)
+	bw.flush()
+	if _, err := buf.Write(bw.buf.Bytes()); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+func (e *Encoder) writeConstantSubframe(buf *bytes.Buffer, sample int32, bitDepth int) error {
+	if err := buf.WriteByte(0x00); err != nil {
+		return err
+	}
+	_, err := buf.Write(e.sampleToBytes(sample))
+	return err
+}
+
+func (e *Encoder) estimateFixedSubframeSize(samples []int32, order int) int {
+	bytesPerSample := e.input.BitDepth() / 8
+	size := 1 + order*bytesPerSample + 2 // header + warm-up + method + Rice param
+
+	_, residuals := e.predictSamples(samples, order)
+	res := residuals[order:]
+	k := calcRiceParameter(res)
+
+	bits := 0
+	for _, r := range res {
+		var u uint32
+		if r < 0 {
+			u = uint32((-r)<<1) - 1
+		} else {
+			u = uint32(r << 1)
+		}
+		q := u >> k
+		bits += int(q) + 1 + k // unary + stop + remainder
+	}
+	return size + (bits+7)/8
+}
+
+func computeLPCCoeff(samples []int32, order int) ([]int32, int) {
+	n := len(samples)
+
+	// Autocorrelation
+	R := make([]float64, order+1)
+	for k := 0; k <= order; k++ {
+		var sum float64
+		for i := 0; i < n-k; i++ {
+			sum += float64(samples[i]) * float64(samples[i+k])
+		}
+		R[k] = sum
+	}
+
+	// Levinson-Durbin recursion
+	a := make([]float64, order+1)
+	E := R[0]
+	if E < 1e-10 {
+		return nil, 0
+	}
+
+	for i := 1; i <= order; i++ {
+		sum := R[i]
+		for j := 1; j < i; j++ {
+			sum -= a[j] * R[i-j]
+		}
+		ki := sum / E
+		a[i] = ki
+		for j := 1; j < i; j++ {
+			a[j] -= ki * a[i-j]
+		}
+		E *= 1.0 - ki*ki
+		if E < 1e-10 {
+			break
+		}
+	}
+
+	shift := 12
+	maxAbs := 0.0
+	for j := 1; j <= order; j++ {
+		v := a[j]
+		if v < 0 {
+			v = -v
+		}
+		if v > maxAbs {
+			maxAbs = v
+		}
+	}
+
+	if maxAbs < 1e-10 {
+		return nil, 0
+	}
+
+	shiftN := 1 << shift
+	scale := float64(shiftN) / maxAbs
+	if scale > float64(1<<20) {
+		scale = float64(1 << 20)
+	}
+
+	coeff := make([]int32, order)
+	for j := 1; j <= order; j++ {
+		coeff[j-1] = int32(math.Round(a[j] * scale))
+	}
+
+	return coeff, shift
+}
+
+func lpcResidual(samples []int32, coeff []int32, shift int) []int32 {
+	order := len(coeff)
+	residuals := make([]int32, len(samples))
+	for i := range samples {
+		var pred int64
+		for j := 0; j < order; j++ {
+			if i > j {
+				pred += int64(coeff[j]) * int64(samples[i-j-1])
+			}
+		}
+		pred >>= shift
+		residuals[i] = samples[i] - int32(pred)
+	}
+	return residuals
+}
+
+func (e *Encoder) estimateLPCSubframeSize(samples []int32, order int) int {
+	coeff, shift := computeLPCCoeff(samples, order)
+	if coeff == nil {
+		return int(^uint(0) >> 1)
+	}
+
+	bytesPerSample := e.input.BitDepth() / 8
+	size := 1 + order*bytesPerSample + 2 // header + warm-up + precision/shift + residual method
+	size += len(coeff) * 2               // 2 bytes per coefficient
+
+	residuals := lpcResidual(samples, coeff, shift)
+	res := residuals[order:]
+	k := calcRiceParameter(res)
+
+	bits := 0
+	for _, r := range res {
+		var u uint32
+		if r < 0 {
+			u = uint32((-r)<<1) - 1
+		} else {
+			u = uint32(r << 1)
+		}
+		q := u >> k
+		bits += int(q) + 1 + k
+	}
+	return size + (bits+7)/8
+}
+
+func (e *Encoder) writeLPCSubframe(buf *bytes.Buffer, samples []int32, bitDepth int, order int) error {
+	coeff, shift := computeLPCCoeff(samples, order)
+	if coeff == nil {
+		return e.writeFixedSubframe(buf, samples, bitDepth, 0)
+	}
+
+	// Subframe header: LPC
+	// bit 7 = 0, bits 6-5 = 01 (LPC marker), bits 4-1 = (order-1), bit 0 = 0 (no wasted bits)
+	if err := buf.WriteByte(0x40 | byte((order-1)&0x0F)<<1); err != nil {
+		return err
+	}
+
+	// Warm-up samples
+	for i := 0; i < order && i < len(samples); i++ {
+		if _, err := buf.Write(e.sampleToBytes(samples[i])); err != nil {
+			return err
+		}
+	}
+
+	// Coefficient precision byte: upper 4 bits = precision (bits per coeff), lower 4 bits = shift
+	precision := uint32(12)
+	if err := buf.WriteByte(byte(precision)<<4 | byte(shift)&0x0F); err != nil {
+		return err
+	}
+
+	// Write coefficients (2 bytes each, little-endian, 12-bit signed)
+	for _, c := range coeff {
+		coefBytes := make([]byte, 2)
+		binary.LittleEndian.PutUint16(coefBytes, uint16(int16(c)))
+		if _, err := buf.Write(coefBytes); err != nil {
+			return err
+		}
+	}
+
+	// Residual coding (same as FIXED subframe)
+	residuals := lpcResidual(samples, coeff, shift)
+	res := residuals[order:]
+	k := calcRiceParameter(res)
+	if err := buf.WriteByte(0x00); err != nil { // residual method
+		return err
+	}
+	if err := buf.WriteByte(byte(k) << 4); err != nil { // Rice parameter
+		return err
+	}
+
+	bw := newBitWriter()
+	e.encodeResidual(bw, res, k)
+	bw.flush()
+	if _, err := buf.Write(bw.buf.Bytes()); err != nil {
+		return err
+	}
+
+	return nil
 }
 
 // Close closes the output FLAC file, ensuring all data is properly written and resources are released.
@@ -513,6 +867,19 @@ func crc16(data []byte) uint16 {
 	return crc // no final xor
 }
 
+func allEqual(samples []int32) bool {
+	if len(samples) == 0 {
+		return false
+	}
+	first := samples[0]
+	for _, s := range samples[1:] {
+		if s != first {
+			return false
+		}
+	}
+	return true
+}
+
 func (e *Encoder) blockSizeCode() byte {
 	// 4096 = 2^12 → code 1101 (13)
 	switch e.maxBlockSize {
@@ -550,4 +917,39 @@ func (e *Encoder) sampleSizeCode() byte {
 	default:
 		return 0
 	}
+}
+
+func (e *Encoder) bestFixedOrder(samples []int32, bitDepth int) int {
+	bytesPerSample := bitDepth / 8
+	bestOrder := 0
+	bestSize := int(^uint(0) >> 1) // max int
+
+	for order := 0; order <= 4; order++ {
+		// Fixed overhead: subframe header + warm-up + residual method/param bytes
+		totalSize := 1 + order*bytesPerSample + 2
+
+		// Residual size estimate
+		_, residuals := e.predictSamples(samples, order)
+		res := residuals[order:]
+		k := calcRiceParameter(res)
+
+		totalBits := 0
+		for _, r := range res {
+			var u uint32
+			if r < 0 {
+				u = uint32((-r)<<1) - 1
+			} else {
+				u = uint32(r << 1)
+			}
+			q := u >> k
+			totalBits += int(q) + 1 + k // unary + stop + remainder
+		}
+		totalSize += (totalBits + 7) / 8 // round up to bytes
+
+		if totalSize < bestSize {
+			bestSize = totalSize
+			bestOrder = order
+		}
+	}
+	return bestOrder
 }
